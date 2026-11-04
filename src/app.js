@@ -116,49 +116,23 @@ function saveStorage() {
 
 // ── YOUTUBE IFRAME API ────────────────────────────────────────
 function loadYouTubeAPI() {
-  const s = document.createElement('script');
-  s.src   = 'https://www.youtube.com/iframe_api';
-  document.head.appendChild(s);
+  if (!window.YT) {
+    const s = document.createElement('script');
+    s.src   = 'https://www.youtube.com/iframe_api';
+    document.head.appendChild(s);
+  }
 }
 
 let pendingTrack = null;
 
 window.onYouTubeIframeAPIReady = function() {
-  const originParam = window.location.origin && window.location.origin.startsWith('http') ? window.location.origin : undefined;
-  ytPlayer = new YT.Player('yt-player', {
-    height: '100%',
-    width: '100%',
-    playerVars: {
-      autoplay: 1,
-      controls: 0,
-      disablekb: 1,
-      modestbranding: 1,
-      rel: 0,
-      iv_load_policy: 3,
-      enablejsapi: 1,
-      playsinline: 1,
-      ...(originParam ? { origin: originParam } : {})
-    },
-    events: {
-      onReady:       onPlayerReady,
-      onStateChange: onPlayerStateChange,
-      onError:       onPlayerError
-    }
-  });
-};
-
-function onPlayerReady() {
-  playerReady = true;
-  ytPlayer.setVolume(volume);
-  audioEl.volume = volume / 100;
-  document.getElementById('volume-slider').value = volume;
-  updateVolumeSliderBg(volume);
+  console.log('YouTube Iframe API is ready');
   if (pendingTrack) {
     const t = pendingTrack;
     pendingTrack = null;
-    playTrack(t);
+    fallbackToYouTube(t);
   }
-}
+};
 
 function onPlayerStateChange(e) {
   const S = YT.PlayerState;
@@ -180,7 +154,7 @@ function onPlayerStateChange(e) {
 function onPlayerError(e) {
   const code = e.data;
   console.warn('YouTube Player error code:', code);
-  showToast(`⏭ Skipping restricted track (${code})`);
+  showToast(`⏭ Skipping track (${code})`);
   setTimeout(() => { if (queue.length > 1) playNext(); }, 1200);
 }
 
@@ -197,7 +171,7 @@ async function playTrack(track) {
   // Stop any previous playback
   audioEl.pause();
   audioEl.currentTime = 0;
-  if (playerReady && ytPlayer && ytPlayer.stopVideo) {
+  if (ytPlayer && ytPlayer.stopVideo) {
     try { ytPlayer.stopVideo(); } catch(_) {}
   }
 
@@ -230,16 +204,63 @@ function fallbackToYouTube(track) {
   playbackMode = 'youtube';
   audioEl.pause();
   audioEl.src = '';
-  if (!playerReady || !ytPlayer || !ytPlayer.loadVideoById) {
+
+  if (!window.YT || !window.YT.Player) {
     pendingTrack = track;
-    showToast('Player loading... will start in a moment');
+    showToast('Loading YouTube engine...');
+    loadYouTubeAPI();
     return;
   }
-  ytPlayer.loadVideoById({ videoId: track.videoId, suggestedQuality: 'small' });
-  ytPlayer.playVideo();
-  isPlaying = true;
-  updatePlayBtn();
-  startProgressTimer();
+
+  if (ytPlayer && ytPlayer.loadVideoById) {
+    try {
+      ytPlayer.loadVideoById({ videoId: track.videoId, startSeconds: 0 });
+      ytPlayer.playVideo();
+      isPlaying = true;
+      updatePlayBtn();
+      startProgressTimer();
+      return;
+    } catch (e) {
+      console.warn('loadVideoById failed, re-initializing player:', e);
+    }
+  }
+
+  // Mount player directly with the clicked video
+  const container = document.getElementById('yt-container');
+  if (container) {
+    container.innerHTML = '<div id="yt-player"></div>';
+  }
+
+  ytPlayer = new YT.Player('yt-player', {
+    height: '100%',
+    width: '100%',
+    videoId: track.videoId,
+    playerVars: {
+      autoplay: 1,
+      controls: 0,
+      disablekb: 1,
+      modestbranding: 1,
+      rel: 0,
+      iv_load_policy: 3,
+      enablejsapi: 1,
+      playsinline: 1
+    },
+    events: {
+      onReady: (e) => {
+        playerReady = true;
+        try {
+          e.target.setVolume(volume);
+          e.target.playVideo();
+        } catch (_) {}
+        isPlaying = true;
+        updatePlayBtn();
+        startProgressTimer();
+        updateNowPlayingBars(true);
+      },
+      onStateChange: onPlayerStateChange,
+      onError: onPlayerError
+    }
+  });
 }
 
 function togglePlayPause() {
