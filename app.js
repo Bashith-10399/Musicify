@@ -121,13 +121,23 @@ function loadYouTubeAPI() {
   document.head.appendChild(s);
 }
 
+let pendingTrack = null;
+
 window.onYouTubeIframeAPIReady = function() {
+  const originParam = window.location.origin && window.location.origin.startsWith('http') ? window.location.origin : undefined;
   ytPlayer = new YT.Player('yt-player', {
-    height: '1', width: '1',
+    height: '100%',
+    width: '100%',
     playerVars: {
-      autoplay: 1, controls: 0, disablekb: 1,
-      modestbranding: 1, rel: 0, iv_load_policy: 3,
-      enablejsapi: 1, playsinline: 1, origin: 'https://www.youtube.com'
+      autoplay: 1,
+      controls: 0,
+      disablekb: 1,
+      modestbranding: 1,
+      rel: 0,
+      iv_load_policy: 3,
+      enablejsapi: 1,
+      playsinline: 1,
+      ...(originParam ? { origin: originParam } : {})
     },
     events: {
       onReady:       onPlayerReady,
@@ -143,18 +153,25 @@ function onPlayerReady() {
   audioEl.volume = volume / 100;
   document.getElementById('volume-slider').value = volume;
   updateVolumeSliderBg(volume);
+  if (pendingTrack) {
+    const t = pendingTrack;
+    pendingTrack = null;
+    playTrack(t);
+  }
 }
 
 function onPlayerStateChange(e) {
-  if (playbackMode !== 'youtube') return;
   const S = YT.PlayerState;
   if (e.data === S.PLAYING) {
     isPlaying = true;
     updatePlayBtn();
     startProgressTimer();
     updateNowPlayingBars(true);
-  } else if (e.data === S.PAUSED || e.data === S.BUFFERING) {
-    if (e.data === S.PAUSED) { isPlaying = false; updatePlayBtn(); stopProgressTimer(); updateNowPlayingBars(false); }
+  } else if (e.data === S.PAUSED) {
+    isPlaying = false;
+    updatePlayBtn();
+    stopProgressTimer();
+    updateNowPlayingBars(false);
   } else if (e.data === S.ENDED) {
     onTrackEnded();
   }
@@ -163,7 +180,7 @@ function onPlayerStateChange(e) {
 function onPlayerError(e) {
   const code = e.data;
   console.warn('YouTube Player error code:', code);
-  showToast(`⏭ Skipping track (${code})`);
+  showToast(`⏭ Skipping restricted track (${code})`);
   setTimeout(() => { if (queue.length > 1) playNext(); }, 1200);
 }
 
@@ -184,7 +201,7 @@ async function playTrack(track) {
     try { ytPlayer.stopVideo(); } catch(_) {}
   }
 
-  // 1. Try Direct Stream Extraction (Bypasses embed restrictions, plays ALL songs)
+  // 1. Try Direct Stream Extraction (in Electron desktop app)
   if (window.electronAPI && window.electronAPI.getStreamUrl) {
     try {
       showToast('🎵 Loading track...');
@@ -204,15 +221,20 @@ async function playTrack(track) {
     }
   }
 
-  // 2. Fallback to YouTube Player with custom origin headers
+  // 2. Play using YouTube Player
   fallbackToYouTube(track);
 }
 
 function fallbackToYouTube(track) {
-  if (!playerReady || !track) return;
+  if (!track) return;
   playbackMode = 'youtube';
   audioEl.pause();
   audioEl.src = '';
+  if (!playerReady || !ytPlayer || !ytPlayer.loadVideoById) {
+    pendingTrack = track;
+    showToast('Player loading... will start in a moment');
+    return;
+  }
   ytPlayer.loadVideoById({ videoId: track.videoId, suggestedQuality: 'small' });
   ytPlayer.playVideo();
   isPlaying = true;
