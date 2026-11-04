@@ -1,0 +1,51 @@
+{
+  "name": "musicify",
+  "version": "1.0.0",
+  "description": "Spotify Clone powered by YouTube",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder build --win dir",
+    "build:exe": "electron-builder build --win nsis"
+  },
+  "devDependencies": {
+    "electron": "^28.3.3",
+    "electron-builder": "^24.13.3",
+    "electron-packager": "^17.1.2"
+  },
+  "build": {
+    "appId": "com.musicify.app",
+    "productName": "Musicify",
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "sign": null,
+      "signingHashAlgorithms": null
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
+  },
+  "allowScripts": {
+    "electron@28.3.3": true
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.6.0",
+    "@capacitor/cli": "^8.6.0",
+    "@capacitor/core": "^8.6.0",
+    "@distube/ytdl-core": "^5.2.1"
+  }
+}

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Musicify</string>
+    <string name="title_activity_main">Musicify</string>
+    <string name="package_name">com.musicify.app</string>
+    <string name="custom_url_scheme">com.musicify.app</string>
+</resources>
