@@ -114,153 +114,97 @@ function saveStorage() {
   } catch(e) {}
 }
 
-// ── YOUTUBE IFRAME API ────────────────────────────────────────
-function loadYouTubeAPI() {
-  if (!window.YT) {
-    const s = document.createElement('script');
-    s.src   = 'https://www.youtube.com/iframe_api';
-    document.head.appendChild(s);
+// ── PLAYBACK ENGINE ──────────────────────────────────────────
+let currentTrackDuration = 0;
+
+function sendIframeCommand(func, args) {
+  const iframe = document.getElementById('yt-iframe');
+  if (iframe && iframe.contentWindow) {
+    iframe.contentWindow.postMessage(JSON.stringify({
+      event: 'command',
+      func: func,
+      args: args || []
+    }), '*');
   }
 }
 
-let pendingTrack = null;
-
-window.onYouTubeIframeAPIReady = function() {
-  console.log('YouTube Iframe API is ready');
-  if (pendingTrack) {
-    const t = pendingTrack;
-    pendingTrack = null;
-    fallbackToYouTube(t);
-  }
-};
-
-function onPlayerStateChange(e) {
-  const S = YT.PlayerState;
-  if (e.data === S.PLAYING) {
-    isPlaying = true;
-    updatePlayBtn();
-    startProgressTimer();
-    updateNowPlayingBars(true);
-  } else if (e.data === S.PAUSED) {
-    isPlaying = false;
-    updatePlayBtn();
-    stopProgressTimer();
-    updateNowPlayingBars(false);
-  } else if (e.data === S.ENDED) {
-    onTrackEnded();
-  }
-}
-
-function onPlayerError(e) {
-  const code = e.data;
-  console.warn('YouTube Player error code:', code);
-  showToast(`⏭ Skipping track (${code})`);
-  setTimeout(() => { if (queue.length > 1) playNext(); }, 1200);
-}
+// Listen to YouTube postMessage events for accurate time, state, and song end
+window.addEventListener('message', (event) => {
+  if (!event.data) return;
+  try {
+    const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+    if (data.event === 'infoDelivery' && data.info) {
+      if (typeof data.info.currentTime === 'number') {
+        const cur = data.info.currentTime;
+        const dur = data.info.duration || currentTrackDuration || 0;
+        if (dur) {
+          currentTrackDuration = dur;
+          const pct = (cur / dur) * 100;
+          document.getElementById('progress-fill').style.width = pct + '%';
+          document.getElementById('progress-thumb').style.left = `calc(${pct}% - 6px)`;
+          document.getElementById('current-time').textContent = formatTime(cur);
+          document.getElementById('total-time').textContent   = formatTime(dur);
+        }
+      }
+      if (data.info.playerState === 1) { // PLAYING
+        isPlaying = true;
+        updatePlayBtn();
+        updateNowPlayingBars(true);
+      } else if (data.info.playerState === 2) { // PAUSED
+        isPlaying = false;
+        updatePlayBtn();
+        updateNowPlayingBars(false);
+      } else if (data.info.playerState === 0) { // ENDED
+        onTrackEnded();
+      }
+    }
+  } catch (_) {}
+});
 
 // ── PLAYBACK ─────────────────────────────────────────────────
 async function playTrack(track) {
   if (!track) return;
   currentTrack = track;
+  currentTrackDuration = 0;
   updateNowPlayingBar(track);
   updateLikeBtn();
   updateQueuePanel();
   updateActiveRows();
   document.title = `${track.title} — Musicify`;
 
-  // Stop any previous playback
+  // Stop desktop html5 audio if running
   audioEl.pause();
   audioEl.currentTime = 0;
-  if (ytPlayer && ytPlayer.stopVideo) {
-    try { ytPlayer.stopVideo(); } catch(_) {}
-  }
 
-  // 1. Try Direct Stream Extraction (in Electron desktop app)
-  if (window.electronAPI && window.electronAPI.getStreamUrl) {
-    try {
-      showToast('🎵 Loading track...');
-      const res = await window.electronAPI.getStreamUrl(track.videoId);
-      if (res && res.url && !res.error) {
-        playbackMode = 'html5';
-        audioEl.src = res.url;
-        audioEl.volume = isMuted ? 0 : (volume / 100);
-        await audioEl.play();
-        isPlaying = true;
-        updatePlayBtn();
-        startProgressTimer();
-        return;
-      }
-    } catch (err) {
-      console.warn('Stream extraction fallback to YouTube:', err);
-    }
-  }
+  isPlaying = true;
+  updatePlayBtn();
+  updateNowPlayingBars(true);
 
-  // 2. Play using YouTube Player
-  fallbackToYouTube(track);
+  // Update mini-player title
+  const mpt = document.getElementById('mini-player-title');
+  if (mpt) mpt.textContent = shortenTitle(track.title, 25);
+
+  // Play in visible, active iframe (works on Chrome, GitHub Pages, mobile)
+  const iframe = document.getElementById('yt-iframe');
+  if (iframe) {
+    iframe.src = `https://www.youtube.com/embed/${track.videoId}?autoplay=1&enablejsapi=1&playsinline=1`;
+  }
 }
 
-function fallbackToYouTube(track) {
-  if (!track) return;
-  playbackMode = 'youtube';
-  audioEl.pause();
-  audioEl.src = '';
-
-  if (!window.YT || !window.YT.Player) {
-    pendingTrack = track;
-    showToast('Loading YouTube engine...');
-    loadYouTubeAPI();
+function togglePlayPause() {
+  if (!currentTrack) {
+    showToast('Select a song first!');
     return;
   }
-
-  if (ytPlayer && ytPlayer.loadVideoById) {
-    try {
-      ytPlayer.loadVideoById({ videoId: track.videoId, startSeconds: 0 });
-      ytPlayer.playVideo();
-      isPlaying = true;
-      updatePlayBtn();
-      startProgressTimer();
-      return;
-    } catch (e) {
-      console.warn('loadVideoById failed, re-initializing player:', e);
-    }
+  if (isPlaying) {
+    sendIframeCommand('pauseVideo');
+    isPlaying = false;
+  } else {
+    sendIframeCommand('playVideo');
+    isPlaying = true;
   }
-
-  // Mount player directly with the clicked video
-  const container = document.getElementById('yt-container');
-  if (container) {
-    container.innerHTML = '<div id="yt-player"></div>';
-  }
-
-  ytPlayer = new YT.Player('yt-player', {
-    height: '100%',
-    width: '100%',
-    videoId: track.videoId,
-    playerVars: {
-      autoplay: 1,
-      controls: 0,
-      disablekb: 1,
-      modestbranding: 1,
-      rel: 0,
-      iv_load_policy: 3,
-      enablejsapi: 1,
-      playsinline: 1
-    },
-    events: {
-      onReady: (e) => {
-        playerReady = true;
-        try {
-          e.target.setVolume(volume);
-          e.target.playVideo();
-        } catch (_) {}
-        isPlaying = true;
-        updatePlayBtn();
-        startProgressTimer();
-        updateNowPlayingBars(true);
-      },
-      onStateChange: onPlayerStateChange,
-      onError: onPlayerError
-    }
-  });
+  updatePlayBtn();
+  updateNowPlayingBars(isPlaying);
 }
 
 function togglePlayPause() {
@@ -1138,7 +1082,7 @@ function setupPlayer() {
   volSlider.addEventListener('input', () => {
     volume = parseInt(volSlider.value, 10);
     audioEl.volume = volume / 100;
-    if (playerReady && ytPlayer && ytPlayer.setVolume) ytPlayer.setVolume(volume);
+    sendIframeCommand('setVolume', [volume]);
     isMuted = (volume === 0);
     updateVolIcons();
     updateVolumeSliderBg(volume);
@@ -1148,10 +1092,7 @@ function setupPlayer() {
   document.getElementById('mute-btn').addEventListener('click', () => {
     isMuted = !isMuted;
     audioEl.muted = isMuted;
-    if (playerReady && ytPlayer) {
-      if (isMuted) ytPlayer.mute();
-      else { ytPlayer.unMute(); ytPlayer.setVolume(volume); }
-    }
+    sendIframeCommand(isMuted ? 'mute' : 'unMute');
     updateVolIcons();
   });
 
@@ -1159,14 +1100,22 @@ function setupPlayer() {
     if (!currentTrack) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const pct  = (e.clientX - rect.left) / rect.width;
-    if (playbackMode === 'html5') {
-      const dur = audioEl.duration || 0;
-      if (dur) audioEl.currentTime = pct * dur;
-    } else if (playerReady && ytPlayer && ytPlayer.getDuration) {
-      const dur = ytPlayer.getDuration() || 0;
-      if (dur) ytPlayer.seekTo(pct * dur, true);
-    }
+    const dur  = currentTrackDuration || 240;
+    sendIframeCommand('seekTo', [pct * dur, true]);
+    if (audioEl.duration) audioEl.currentTime = pct * audioEl.duration;
   });
+
+  // Toggle mini-player expand/collapse
+  const toggleMiniBtn = document.getElementById('toggle-mini-player-btn');
+  if (toggleMiniBtn) {
+    toggleMiniBtn.addEventListener('click', () => {
+      const wrap = document.getElementById('mini-player-wrap');
+      if (wrap) {
+        wrap.classList.toggle('minimized');
+        toggleMiniBtn.textContent = wrap.classList.contains('minimized') ? '🗖' : '🗕';
+      }
+    });
+  }
 
   document.getElementById('queue-toggle-btn').addEventListener('click', () => {
     const panel = document.getElementById('queue-panel');

@@ -179,9 +179,18 @@
   </button>
 </nav>
 
-<!-- Active Background YouTube Player Container -->
-<div id="yt-container" style="position:fixed;bottom:0;right:0;width:240px;height:140px;opacity:0.001;pointer-events:none;z-index:-1;overflow:hidden;">
-  <div id="yt-player"></div>
+<!-- Floating Mini Video / Audio Player -->
+<div id="mini-player-wrap" class="mini-player-wrap">
+  <div class="mini-player-header">
+    <span id="mini-player-title">Now Playing</span>
+    <button id="toggle-mini-player-btn" title="Minimize / Expand">🗕</button>
+  </div>
+  <iframe
+    id="yt-iframe"
+    src="about:blank"
+    allow="autoplay; encrypted-media; picture-in-picture"
+    allowfullscreen>
+  </iframe>
 </div>
 
 <!-- Create Playlist Modal -->
