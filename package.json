@@ -1,7 +1,7 @@
 {
-  "name": "musicify",
+  "name": "musicflow",
   "version": "1.0.0",
-  "description": "Spotify Clone powered by YouTube",
+  "description": "Free modern music streaming player",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -14,8 +14,8 @@
     "electron-packager": "^17.1.2"
   },
   "build": {
-    "appId": "com.musicify.app",
-    "productName": "Musicify",
+    "appId": "com.musicflow.app",
+    "productName": "MusicFlow",
     "files": [
       "main.js",
       "preload.js",

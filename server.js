@@ -39,7 +39,7 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`\n======================================================`);
-  console.log(`  Musicify Mobile Server is running!`);
+  console.log(`  MusicFlow Mobile Server is running!`);
   console.log(`  Local:   http://localhost:${PORT}`);
   console.log(`  Phone:   http://10.246.188.34:${PORT}`);
   console.log(`======================================================\n`);

@@ -1,5 +1,5 @@
 /* ============================================================
-   MUSICIFY — App Logic (app.js)
+   MUSICFLOW — App Logic (app.js)
    Hybrid Engine: Direct Audio Streaming + YouTube Player Fallback
    ============================================================ */
 
@@ -63,8 +63,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setupSidebar();
   setupPlayer();
   setupKeyboard();
-  loadYouTubeAPI();
-  renderSidebar();
+renderSidebar();
   showPage('home');
 });
 
@@ -116,15 +115,18 @@ function saveStorage() {
 
 // ── PLAYBACK ENGINE ──────────────────────────────────────────
 let currentTrackDuration = 0;
+let currentTrackTime     = 0;
 
 function sendIframeCommand(func, args) {
   const iframe = document.getElementById('yt-iframe');
   if (iframe && iframe.contentWindow) {
-    iframe.contentWindow.postMessage(JSON.stringify({
-      event: 'command',
-      func: func,
-      args: args || []
-    }), '*');
+    try {
+      iframe.contentWindow.postMessage(JSON.stringify({
+        event: 'command',
+        func: func,
+        args: args || []
+      }), '*');
+    } catch(_) {}
   }
 }
 
@@ -135,15 +137,19 @@ window.addEventListener('message', (event) => {
     const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
     if (data.event === 'infoDelivery' && data.info) {
       if (typeof data.info.currentTime === 'number') {
-        const cur = data.info.currentTime;
+        currentTrackTime = data.info.currentTime;
         const dur = data.info.duration || currentTrackDuration || 0;
         if (dur) {
           currentTrackDuration = dur;
-          const pct = (cur / dur) * 100;
-          document.getElementById('progress-fill').style.width = pct + '%';
-          document.getElementById('progress-thumb').style.left = `calc(${pct}% - 6px)`;
-          document.getElementById('current-time').textContent = formatTime(cur);
-          document.getElementById('total-time').textContent   = formatTime(dur);
+          const pct = Math.min(100, Math.max(0, (currentTrackTime / dur) * 100));
+          const fill = document.getElementById('progress-fill');
+          const thumb = document.getElementById('progress-thumb');
+          if (fill) fill.style.width = pct + '%';
+          if (thumb) thumb.style.left = 'calc(' + pct + '% - 6px)';
+          const ct = document.getElementById('current-time');
+          const tt = document.getElementById('total-time');
+          if (ct) ct.textContent = formatTime(currentTrackTime);
+          if (tt) tt.textContent = formatTime(dur);
         }
       }
       if (data.info.playerState === 1) { // PLAYING
@@ -166,11 +172,12 @@ async function playTrack(track) {
   if (!track) return;
   currentTrack = track;
   currentTrackDuration = 0;
+  currentTrackTime     = 0;
   updateNowPlayingBar(track);
   updateLikeBtn();
   updateQueuePanel();
   updateActiveRows();
-  document.title = `${track.title} — Musicify`;
+  document.title = track.title + ' — MusicFlow';
 
   // Stop desktop html5 audio if running
   audioEl.pause();
@@ -187,7 +194,13 @@ async function playTrack(track) {
   // Play in visible, active iframe (works on Chrome, GitHub Pages, mobile)
   const iframe = document.getElementById('yt-iframe');
   if (iframe) {
-    iframe.src = `https://www.youtube.com/embed/${track.videoId}?autoplay=1&enablejsapi=1&playsinline=1`;
+    const origin = (window.location.origin && window.location.origin !== 'null') ? encodeURIComponent(window.location.origin) : 'https://bashith-10399.github.io';
+    iframe.src = 'https://www.youtube.com/embed/' + track.videoId + '?autoplay=1&enablejsapi=1&playsinline=1&origin=' + origin;
+    iframe.onload = () => {
+      try {
+        iframe.contentWindow.postMessage(JSON.stringify({ event: 'listening' }), '*');
+      } catch(_) {}
+    };
   }
 }
 
@@ -198,34 +211,15 @@ function togglePlayPause() {
   }
   if (isPlaying) {
     sendIframeCommand('pauseVideo');
+    if (audioEl && !audioEl.paused) audioEl.pause();
     isPlaying = false;
   } else {
     sendIframeCommand('playVideo');
+    if (audioEl && audioEl.src) audioEl.play().catch(() => {});
     isPlaying = true;
   }
   updatePlayBtn();
   updateNowPlayingBars(isPlaying);
-}
-
-function togglePlayPause() {
-  if (!currentTrack) {
-    showToast('Select a song first!');
-    return;
-  }
-  if (playbackMode === 'html5') {
-    if (audioEl.paused) {
-      audioEl.play();
-      isPlaying = true;
-    } else {
-      audioEl.pause();
-      isPlaying = false;
-    }
-    updatePlayBtn();
-  } else {
-    if (!playerReady) return;
-    if (isPlaying) { ytPlayer.pauseVideo(); }
-    else { ytPlayer.playVideo(); }
-  }
 }
 
 function playNext() {
@@ -242,16 +236,11 @@ function playNext() {
 
 function playPrev() {
   if (!currentTrack) return;
-  let curTime = 0;
-  if (playbackMode === 'html5') {
-    curTime = audioEl.currentTime || 0;
-  } else if (playerReady && ytPlayer.getCurrentTime) {
-    curTime = ytPlayer.getCurrentTime() || 0;
-  }
+  const curTime = (audioEl && !audioEl.paused) ? audioEl.currentTime : (currentTrackTime || 0);
 
   if (curTime > 3) {
-    if (playbackMode === 'html5') audioEl.currentTime = 0;
-    else ytPlayer.seekTo(0, true);
+    if (audioEl && audioEl.src) audioEl.currentTime = 0;
+    sendIframeCommand('seekTo', [0, true]);
     return;
   }
 
@@ -263,13 +252,15 @@ function playPrev() {
 function onTrackEnded() {
   isPlaying = false;
   if (repeatMode === 2) {
-    if (playbackMode === 'html5') {
+    if (audioEl && audioEl.src) {
       audioEl.currentTime = 0;
-      audioEl.play();
-    } else if (playerReady) {
-      ytPlayer.seekTo(0, true);
-      ytPlayer.playVideo();
+      audioEl.play().catch(() => {});
     }
+    sendIframeCommand('seekTo', [0, true]);
+    sendIframeCommand('playVideo');
+    isPlaying = true;
+    updatePlayBtn();
+    updateNowPlayingBars(true);
     return;
   }
   if (repeatMode === 1 || queueIndex < queue.length - 1) {
@@ -293,7 +284,7 @@ function addToQueue(track, playNow = false) {
     queue.push(track);
     const idx = queue.length - 1;
     if (playNow) { queueIndex = idx; playTrack(track); }
-    else { showToast(`Added "${shortenTitle(track.title)}" to queue`); }
+    else { showToast('Added "' + shortenTitle(track.title) + '" to queue'); }
   } else {
     if (playNow) { queueIndex = exists; playTrack(track); }
   }
@@ -329,22 +320,18 @@ function stopProgressTimer() {
 }
 
 function updateProgress() {
-  let cur = 0;
-  let dur = 0;
-  if (playbackMode === 'html5') {
-    cur = audioEl.currentTime || 0;
-    dur = audioEl.duration || 0;
-  } else if (playerReady && ytPlayer && ytPlayer.getDuration) {
-    cur = ytPlayer.getCurrentTime() || 0;
-    dur = ytPlayer.getDuration() || 0;
-  }
-
+  let cur = (audioEl && !audioEl.paused) ? (audioEl.currentTime || 0) : (currentTrackTime || 0);
+  let dur = (audioEl && audioEl.duration) ? audioEl.duration : (currentTrackDuration || 0);
   if (!dur || isNaN(dur)) return;
-  const pct = (cur / dur) * 100;
-  document.getElementById('progress-fill').style.width = pct + '%';
-  document.getElementById('progress-thumb').style.left = `calc(${pct}% - 6px)`;
-  document.getElementById('current-time').textContent = formatTime(cur);
-  document.getElementById('total-time').textContent   = formatTime(dur);
+  const pct = Math.min(100, Math.max(0, (cur / dur) * 100));
+  const fill = document.getElementById('progress-fill');
+  const thumb = document.getElementById('progress-thumb');
+  if (fill) fill.style.width = pct + '%';
+  if (thumb) thumb.style.left = 'calc(' + pct + '% - 6px)';
+  const ct = document.getElementById('current-time');
+  const tt = document.getElementById('total-time');
+  if (ct) ct.textContent = formatTime(cur);
+  if (tt) tt.textContent = formatTime(dur);
 }
 
 // ── UI UPDATES ────────────────────────────────────────────────
@@ -734,7 +721,7 @@ function showPlaylistPage(id) {
         <div class="playlist-type">Playlist</div>
         <div class="playlist-title">${escHtml(pl.name)}</div>
         ${pl.desc ? `<div class="playlist-desc">${escHtml(pl.desc)}</div>` : ''}
-        <div class="playlist-meta">Musicify · ${pl.tracks.length} songs</div>
+        <div class="playlist-meta">MusicFlow · ${pl.tracks.length} songs</div>
       </div>
     </div>
     <div class="playlist-actions">
@@ -781,7 +768,7 @@ function showLikedPage() {
       <div class="playlist-info">
         <div class="playlist-type">Playlist</div>
         <div class="playlist-title">Liked Songs</div>
-        <div class="playlist-meta">Musicify · ${likedSongs.length} songs</div>
+        <div class="playlist-meta">MusicFlow · ${likedSongs.length} songs</div>
       </div>
     </div>
     <div class="playlist-actions">
@@ -1166,16 +1153,14 @@ function setupKeyboard() {
         if (e.shiftKey) { e.preventDefault(); playNext(); }
         else if (currentTrack) {
           e.preventDefault();
-          if (playbackMode === 'html5') audioEl.currentTime = Math.min(audioEl.duration || 0, (audioEl.currentTime || 0) + 5);
-          else if (playerReady && ytPlayer.seekTo) ytPlayer.seekTo((ytPlayer.getCurrentTime()||0)+5, true);
+          const newT = (currentTrackTime || 0) + 5; sendIframeCommand('seekTo', [newT, true]); if (audioEl && audioEl.duration) audioEl.currentTime = Math.min(audioEl.duration, (audioEl.currentTime || 0) + 5);
         }
         break;
       case 'ArrowLeft':
         if (e.shiftKey) { e.preventDefault(); playPrev(); }
         else if (currentTrack) {
           e.preventDefault();
-          if (playbackMode === 'html5') audioEl.currentTime = Math.max(0, (audioEl.currentTime || 0) - 5);
-          else if (playerReady && ytPlayer.seekTo) ytPlayer.seekTo(Math.max(0,(ytPlayer.getCurrentTime()||0)-5), true);
+          const newT = Math.max(0, (currentTrackTime || 0) - 5); sendIframeCommand('seekTo', [newT, true]); if (audioEl && audioEl.duration) audioEl.currentTime = Math.max(0, (audioEl.currentTime || 0) - 5);
         }
         break;
       case 'ArrowUp':
@@ -1183,7 +1168,7 @@ function setupKeyboard() {
         volume = Math.min(100, volume + 5);
         document.getElementById('volume-slider').value = volume;
         audioEl.volume = volume / 100;
-        if (playerReady && ytPlayer.setVolume) ytPlayer.setVolume(volume);
+        sendIframeCommand('setVolume', [volume]);
         updateVolumeSliderBg(volume);
         break;
       case 'ArrowDown':
@@ -1191,7 +1176,7 @@ function setupKeyboard() {
         volume = Math.max(0, volume - 5);
         document.getElementById('volume-slider').value = volume;
         audioEl.volume = volume / 100;
-        if (playerReady && ytPlayer.setVolume) ytPlayer.setVolume(volume);
+        sendIframeCommand('setVolume', [volume]);
         updateVolumeSliderBg(volume);
         break;
       case 'KeyM':  document.getElementById('mute-btn').click(); break;

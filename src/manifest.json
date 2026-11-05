@@ -1,11 +1,11 @@
 {
-  "name": "Musicify - Music for Everyone",
-  "short_name": "Musicify",
+  "name": "MusicFlow Player",
+  "short_name": "MusicFlow",
   "start_url": "index.html",
   "display": "standalone",
   "background_color": "#121212",
-  "theme_color": "#1DB954",
-  "description": "Spotify Clone powered by YouTube",
+  "theme_color": "#8B5CF6",
+  "description": "Free modern music streaming player",
   "orientation": "portrait",
   "icons": [
     {
@@ -15,4 +15,3 @@
     }
   ]
 }
-

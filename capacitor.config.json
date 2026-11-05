@@ -1,6 +1,6 @@
 {
-  "appId": "com.musicify.app",
-  "appName": "Musicify",
+  "appId": "com.musicflow.app",
+  "appName": "MusicFlow",
   "webDir": "src",
   "server": {
     "androidScheme": "https",
@@ -10,4 +10,3 @@
     "allowMixedContent": true
   }
 }
-
