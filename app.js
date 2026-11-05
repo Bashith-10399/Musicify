@@ -51,7 +51,7 @@ const GENRES = [
 async function apiFetch(endpoint, params = {}) {
   const url = new URL(API_BASE + endpoint);
   Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
-  const res = await fetch(url.toString(), { signal: AbortSignal.timeout(15000) });
+  const res = await fetch(url.toString(), { signal: AbortSignal.timeout(60000) });
   if (!res.ok) throw new Error(`API error ${res.status}`);
   return res.json();
 }
