@@ -7,7 +7,7 @@
 
 // ── BACKEND API CONFIG ────────────────────────────────────────
 // Local default: http://localhost:8002. In production set window.MUSICFLOW_API to Render/Railway URL.
-const API_BASE = window.MUSICFLOW_API || 'http://localhost:8002';
+const API_BASE = window.MUSICFLOW_API || 'https://musicify-pqq8.onrender.com';
 
 // ── STATE ────────────────────────────────────────────────────
 let currentTrack      = null;
