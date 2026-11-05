@@ -1,36 +1,35 @@
 /* ============================================================
-   MUSICFLOW — App Logic (app.js)
-   Hybrid Engine: Direct Audio Streaming + YouTube Player Fallback
+   MUSICFLOW — Clean Ad-Free Native HTML5 Audio Player
+   Powered by Python FastAPI + yt-dlp Backend (Zero Ads, No Iframes)
    ============================================================ */
 
 'use strict';
 
-// ── CONFIG ──────────────────────────────────────────────────
-const YT_API_KEY  = 'AIzaSyBYvD5p0mNoWwQuoGmv94VPGJ2YFjV3dPw';
-const YT_API_BASE = 'https://www.googleapis.com/youtube/v3';
+// ── BACKEND API CONFIG ────────────────────────────────────────
+// Local default: http://localhost:8002. In production set window.MUSICFLOW_API to Render/Railway URL.
+const API_BASE = window.MUSICFLOW_API || 'http://localhost:8002';
 
 // ── STATE ────────────────────────────────────────────────────
-let ytPlayer        = null;
-let playerReady     = false;
-let currentTrack    = null;
-let isPlaying       = false;
-let isShuffled      = false;
-let repeatMode      = 0;        // 0=off 1=all 2=one
-let volume          = 80;
-let isMuted         = false;
-let queue           = [];       // array of track objects
-let queueIndex      = -1;
-let playlists       = [];       // [{id, name, desc, tracks:[], createdAt}]
-let likedSongs      = [];       // array of track ids
-let currentPage     = 'home';
+let currentTrack      = null;
+let isPlaying         = false;
+let isShuffled        = false;
+let repeatMode        = 0;        // 0=off 1=all 2=one
+let volume            = 80;
+let isMuted           = false;
+let queue             = [];       // array of track objects
+let queueIndex        = -1;
+let playlists         = [];       // [{id, name, desc, tracks:[], createdAt}]
+let likedSongs        = [];       // array of track objects
+let currentPage       = 'home';
 let currentPlaylistId = null;
-let progressTimer   = null;
-let searchTimeout   = null;
-let contextTarget   = null;     // track object for context menu
+let progressTimer     = null;
+let searchTimeout     = null;
+let contextTarget     = null;     // track object for context menu
+let _streamCache      = {};       // cache stream URLs for session
 
-// ── HYBRID AUDIO ENGINE ──────────────────────────────────────
-const audioEl       = new Audio();
-let playbackMode    = 'html5'; // 'html5' or 'youtube'
+// ── NATIVE HTML5 AUDIO ENGINE ─────────────────────────────────
+const audioEl = new Audio();
+audioEl.preload = 'auto';
 
 // ── GENRES ───────────────────────────────────────────────────
 const GENRES = [
@@ -38,21 +37,24 @@ const GENRES = [
   { name: 'Hip-Hop',       query: 'hip hop rap 2024',       color: '#9C27B0' },
   { name: 'Rock',          query: 'rock music classic',     color: '#E53935' },
   { name: 'Electronic',    query: 'electronic EDM 2024',    color: '#1565C0' },
-  { name: 'Jazz',          query: 'jazz music smooth',      color: '#FF6F00' },
-  { name: 'Classical',     query: 'classical orchestral',   color: '#2E7D32' },
-  { name: 'R&B / Soul',    query: 'r&b soul music 2024',    color: '#6A1B9A' },
-  { name: 'Country',       query: 'country music hits',     color: '#795548' },
-  { name: 'Bollywood',     query: 'bollywood hits 2024',    color: '#F57C00' },
-  { name: 'Latin',         query: 'latin music reggaeton',  color: '#00897B' },
-  { name: 'Metal',         query: 'metal music heavy',      color: '#37474F' },
-  { name: 'Lo-Fi',         query: 'lofi hip hop chill',     color: '#5C6BC0' },
-  { name: 'K-Pop',         query: 'kpop 2024',              color: '#EC407A' },
-  { name: 'Indie',         query: 'indie alternative music',color: '#8D6E63' },
-  { name: 'Punjabi',       query: 'punjabi songs 2024',     color: '#FF8F00' },
-  { name: 'Workout',       query: 'workout gym music',      color: '#D32F2F' },
-  { name: 'Relaxing',      query: 'relaxing calm music',    color: '#1976D2' },
-  { name: 'Party',         query: 'party dance music',      color: '#7B1FA2' },
+  { name: 'R&B / Soul',    query: 'r&b soul music',         color: '#4A148C' },
+  { name: 'Bollywood',     query: 'bollywood hits 2024',    color: '#E65100' },
+  { name: 'Indie',         query: 'indie music 2024',       color: '#2E7D32' },
+  { name: 'Lo-Fi Chill',   query: 'lofi hip hop chill beats',color: '#37474F' },
+  { name: 'Acoustic',      query: 'acoustic songs guitar',  color: '#8D6E63' },
+  { name: 'Dance / Club',  query: 'club dance party mix',   color: '#00838F' },
+  { name: 'Workout',       query: 'workout motivation music',color: '#C2185B' },
+  { name: 'Study / Focus', query: 'deep focus study music', color: '#1A237E' },
 ];
+
+// ── API CLIENT ────────────────────────────────────────────────
+async function apiFetch(endpoint, params = {}) {
+  const url = new URL(API_BASE + endpoint);
+  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+  const res = await fetch(url.toString(), { signal: AbortSignal.timeout(15000) });
+  if (!res.ok) throw new Error(`API error ${res.status}`);
+  return res.json();
+}
 
 // ── INIT ─────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -63,7 +65,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setupSidebar();
   setupPlayer();
   setupKeyboard();
-renderSidebar();
+  renderSidebar();
   showPage('home');
 });
 
@@ -84,12 +86,14 @@ function setupAudioListeners() {
   });
 
   audioEl.addEventListener('ended', onTrackEnded);
-
   audioEl.addEventListener('timeupdate', updateProgress);
 
   audioEl.addEventListener('error', (e) => {
-    console.warn('HTML5 audio error, falling back to YouTube embed', e);
-    if (currentTrack) fallbackToYouTube(currentTrack);
+    console.warn('Audio playback error:', e);
+    showToast('⚠️ Audio error. Skipping to next song...');
+    if (currentTrack && queue.length > 1) {
+      setTimeout(() => playNext(), 1500);
+    }
   });
 }
 
@@ -102,6 +106,7 @@ function loadStorage() {
     const theme = localStorage.getItem('mfy_theme') || 'dark';
     document.documentElement.setAttribute('data-theme', theme);
     updateThemeIcon(theme);
+    audioEl.volume = volume / 100;
   } catch(e) { console.warn('Storage load failed', e); }
 }
 
@@ -114,93 +119,41 @@ function saveStorage() {
 }
 
 // ── PLAYBACK ENGINE ──────────────────────────────────────────
-let currentTrackDuration = 0;
-let currentTrackTime     = 0;
-
-function sendIframeCommand(func, args) {
-  const iframe = document.getElementById('yt-iframe');
-  if (iframe && iframe.contentWindow) {
-    try {
-      iframe.contentWindow.postMessage(JSON.stringify({
-        event: 'command',
-        func: func,
-        args: args || []
-      }), '*');
-    } catch(_) {}
-  }
-}
-
-// Listen to YouTube postMessage events for accurate time, state, and song end
-window.addEventListener('message', (event) => {
-  if (!event.data) return;
-  try {
-    const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
-    if (data.event === 'infoDelivery' && data.info) {
-      if (typeof data.info.currentTime === 'number') {
-        currentTrackTime = data.info.currentTime;
-        const dur = data.info.duration || currentTrackDuration || 0;
-        if (dur) {
-          currentTrackDuration = dur;
-          const pct = Math.min(100, Math.max(0, (currentTrackTime / dur) * 100));
-          const fill = document.getElementById('progress-fill');
-          const thumb = document.getElementById('progress-thumb');
-          if (fill) fill.style.width = pct + '%';
-          if (thumb) thumb.style.left = 'calc(' + pct + '% - 6px)';
-          const ct = document.getElementById('current-time');
-          const tt = document.getElementById('total-time');
-          if (ct) ct.textContent = formatTime(currentTrackTime);
-          if (tt) tt.textContent = formatTime(dur);
-        }
-      }
-      if (data.info.playerState === 1) { // PLAYING
-        isPlaying = true;
-        updatePlayBtn();
-        updateNowPlayingBars(true);
-      } else if (data.info.playerState === 2) { // PAUSED
-        isPlaying = false;
-        updatePlayBtn();
-        updateNowPlayingBars(false);
-      } else if (data.info.playerState === 0) { // ENDED
-        onTrackEnded();
-      }
-    }
-  } catch (_) {}
-});
-
-// ── PLAYBACK ─────────────────────────────────────────────────
 async function playTrack(track) {
   if (!track) return;
   currentTrack = track;
-  currentTrackDuration = 0;
-  currentTrackTime     = 0;
   updateNowPlayingBar(track);
   updateLikeBtn();
   updateQueuePanel();
   updateActiveRows();
   document.title = track.title + ' — MusicFlow';
 
-  // Stop desktop html5 audio if running
   audioEl.pause();
   audioEl.currentTime = 0;
+  audioEl.src = '';
 
-  isPlaying = true;
+  showToast('⏳ Loading ad-free stream...');
   updatePlayBtn();
-  updateNowPlayingBars(true);
+  updateNowPlayingBars(false);
 
-  // Update mini-player title
-  const mpt = document.getElementById('mini-player-title');
-  if (mpt) mpt.textContent = shortenTitle(track.title, 25);
+  try {
+    let streamUrl = _streamCache[track.videoId];
+    if (!streamUrl) {
+      const data = await apiFetch('/stream', { videoId: track.videoId });
+      if (!data || !data.audioUrl) throw new Error('No stream URL');
+      streamUrl = data.audioUrl;
+      _streamCache[track.videoId] = streamUrl;
+      if (data.duration) track.duration = data.duration;
+    }
 
-  // Play in visible, active iframe (works on Chrome, GitHub Pages, mobile)
-  const iframe = document.getElementById('yt-iframe');
-  if (iframe) {
-    const origin = (window.location.origin && window.location.origin !== 'null') ? encodeURIComponent(window.location.origin) : 'https://bashith-10399.github.io';
-    iframe.src = 'https://www.youtube-nocookie.com/embed/' + track.videoId + '?autoplay=1&enablejsapi=1&playsinline=1&origin=' + origin;
-    iframe.onload = () => {
-      try {
-        iframe.contentWindow.postMessage(JSON.stringify({ event: 'listening' }), '*');
-      } catch(_) {}
-    };
+    audioEl.src = streamUrl;
+    audioEl.volume = isMuted ? 0 : (volume / 100);
+    await audioEl.play();
+    showToast('▶ Playing: ' + shortenTitle(track.title, 25));
+  } catch (err) {
+    console.error('Audio stream fetch failed:', err);
+    showToast('❌ Backend offline. Start Python backend server.');
+    setTimeout(() => { if (queue.length > 1) playNext(); }, 2000);
   }
 }
 
@@ -210,16 +163,10 @@ function togglePlayPause() {
     return;
   }
   if (isPlaying) {
-    sendIframeCommand('pauseVideo');
-    if (audioEl && !audioEl.paused) audioEl.pause();
-    isPlaying = false;
+    audioEl.pause();
   } else {
-    sendIframeCommand('playVideo');
-    if (audioEl && audioEl.src) audioEl.play().catch(() => {});
-    isPlaying = true;
+    audioEl.play().catch(e => console.warn('Play error:', e));
   }
-  updatePlayBtn();
-  updateNowPlayingBars(isPlaying);
 }
 
 function playNext() {
@@ -227,7 +174,7 @@ function playNext() {
   if (isShuffled) {
     queueIndex = Math.floor(Math.random() * queue.length);
   } else if (repeatMode === 2) {
-    // repeat one
+    // repeat one handled on ended
   } else {
     queueIndex = (queueIndex + 1) % queue.length;
   }
@@ -236,14 +183,10 @@ function playNext() {
 
 function playPrev() {
   if (!currentTrack) return;
-  const curTime = (audioEl && !audioEl.paused) ? audioEl.currentTime : (currentTrackTime || 0);
-
-  if (curTime > 3) {
-    if (audioEl && audioEl.src) audioEl.currentTime = 0;
-    sendIframeCommand('seekTo', [0, true]);
+  if (audioEl.currentTime > 3) {
+    audioEl.currentTime = 0;
     return;
   }
-
   if (!queue.length) return;
   queueIndex = Math.max(0, queueIndex - 1);
   playTrack(queue[queueIndex]);
@@ -252,15 +195,8 @@ function playPrev() {
 function onTrackEnded() {
   isPlaying = false;
   if (repeatMode === 2) {
-    if (audioEl && audioEl.src) {
-      audioEl.currentTime = 0;
-      audioEl.play().catch(() => {});
-    }
-    sendIframeCommand('seekTo', [0, true]);
-    sendIframeCommand('playVideo');
-    isPlaying = true;
-    updatePlayBtn();
-    updateNowPlayingBars(true);
+    audioEl.currentTime = 0;
+    audioEl.play().catch(() => {});
     return;
   }
   if (repeatMode === 1 || queueIndex < queue.length - 1) {
@@ -312,7 +248,7 @@ function shuffleQueue(currentIdx) {
 // ── PROGRESS TIMER ────────────────────────────────────────────
 function startProgressTimer() {
   stopProgressTimer();
-  progressTimer = setInterval(updateProgress, 400);
+  progressTimer = setInterval(updateProgress, 350);
 }
 
 function stopProgressTimer() {
@@ -320,14 +256,14 @@ function stopProgressTimer() {
 }
 
 function updateProgress() {
-  let cur = (audioEl && !audioEl.paused) ? (audioEl.currentTime || 0) : (currentTrackTime || 0);
-  let dur = (audioEl && audioEl.duration) ? audioEl.duration : (currentTrackDuration || 0);
+  const cur = audioEl.currentTime || 0;
+  const dur = audioEl.duration || (currentTrack && currentTrack.duration) || 0;
   if (!dur || isNaN(dur)) return;
   const pct = Math.min(100, Math.max(0, (cur / dur) * 100));
   const fill = document.getElementById('progress-fill');
   const thumb = document.getElementById('progress-thumb');
   if (fill) fill.style.width = pct + '%';
-  if (thumb) thumb.style.left = 'calc(' + pct + '% - 6px)';
+  if (thumb) thumb.style.left = `calc(${pct}% - 6px)`;
   const ct = document.getElementById('current-time');
   const tt = document.getElementById('total-time');
   if (ct) ct.textContent = formatTime(cur);
@@ -346,60 +282,59 @@ function updateNowPlayingBar(track) {
 function updatePlayBtn() {
   const pi = document.getElementById('play-icon');
   const pa = document.getElementById('pause-icon');
-  if (isPlaying) { pi.style.display = 'none'; pa.style.display = ''; }
-  else           { pi.style.display = '';     pa.style.display = 'none'; }
+  if (!pi || !pa) return;
+  if (isPlaying) {
+    pi.style.display = 'none';
+    pa.style.display = 'block';
+  } else {
+    pi.style.display = 'block';
+    pa.style.display = 'none';
+  }
+}
+
+function updateNowPlayingBars(playing) {
+  document.querySelectorAll('.track-row.playing .now-playing-bars').forEach(el => {
+    el.style.opacity = playing ? '1' : '0.4';
+  });
 }
 
 function updateLikeBtn() {
   const btn = document.getElementById('like-btn');
-  if (!currentTrack) return;
-  const liked = likedSongs.some(t => t.videoId === currentTrack.videoId);
-  btn.classList.toggle('liked', liked);
-  btn.title = liked ? 'Remove from Liked Songs' : 'Like';
-  const svg = btn.querySelector('svg');
-  svg.setAttribute('fill', liked ? 'currentColor' : 'none');
-}
-
-function updateNowPlayingBars(playing) {
-  document.querySelectorAll('.track-num[data-id]').forEach(el => {
-    const id = el.getAttribute('data-id');
-    if (id === (currentTrack && currentTrack.videoId)) {
-      el.innerHTML = playing
-        ? '<div class="now-playing-bars"><span></span><span></span><span></span></div>'
-        : el.getAttribute('data-idx');
-    }
-  });
+  if (!btn) return;
+  const isLiked = currentTrack && likedSongs.some(t => t.videoId === currentTrack.videoId);
+  btn.classList.toggle('liked', !!isLiked);
+  btn.title = isLiked ? 'Remove from Liked Songs' : 'Save to Liked Songs';
 }
 
 function updateActiveRows() {
   document.querySelectorAll('.track-row').forEach(row => {
     const id = row.getAttribute('data-id');
-    row.classList.toggle('playing', id === (currentTrack && currentTrack.videoId));
+    const isThis = currentTrack && id === currentTrack.videoId;
+    row.classList.toggle('playing', isThis);
+    const numEl = row.querySelector('.track-num');
+    if (numEl) {
+      if (isThis) {
+        numEl.innerHTML = '<div class="now-playing-bars"><span></span><span></span><span></span></div>';
+      } else {
+        const origIdx = row.getAttribute('data-idx');
+        numEl.textContent = (parseInt(origIdx, 10) + 1) || '';
+      }
+    }
   });
 }
 
-function updateVolumeSliderBg(val) {
-  const slider = document.getElementById('volume-slider');
-  slider.style.setProperty('--vol-pct', val + '%');
-  slider.style.background = `linear-gradient(to right, var(--accent) ${val}%, var(--bg-highlight) ${val}%)`;
-}
-
-function updateThemeIcon(theme) {
-  const moon = document.getElementById('moon-icon');
-  const sun  = document.getElementById('sun-icon');
-  if (theme === 'dark') { moon.style.display = ''; sun.style.display = 'none'; }
-  else                  { moon.style.display = 'none'; sun.style.display = ''; }
-}
-
 function updateQueuePanel() {
-  const npEl = document.getElementById('queue-now-playing');
-  if (currentTrack) {
-    npEl.innerHTML = queueItemHTML(currentTrack, true);
-  } else {
-    npEl.innerHTML = '<p style="color:var(--text-muted);font-size:12px;padding:8px 0">Nothing playing</p>';
+  const nowEl = document.getElementById('queue-now-playing');
+  if (nowEl) {
+    if (currentTrack) {
+      nowEl.innerHTML = queueItemHTML(currentTrack, true, queueIndex);
+    } else {
+      nowEl.innerHTML = '<p style="color:var(--text-muted);font-size:12px;padding:8px 0">No song playing</p>';
+    }
   }
 
   const nextEl = document.getElementById('queue-next-list');
+  if (!nextEl) return;
   const upcoming = queue.slice(queueIndex + 1, queueIndex + 20);
   if (!upcoming.length) {
     nextEl.innerHTML = '<p style="color:var(--text-muted);font-size:12px;padding:8px 0">Queue is empty</p>';
@@ -424,6 +359,7 @@ function queueItemHTML(track, isActive, idx) {
 // ── SIDEBAR ───────────────────────────────────────────────────
 function renderSidebar() {
   const list = document.getElementById('playlists-list');
+  if (!list) return;
   const items = [
     { id: 'liked', name: 'Liked Songs', desc: `${likedSongs.length} songs`, type: 'liked' },
     ...playlists.map(p => ({ id: p.id, name: p.name, desc: `Playlist · ${p.tracks.length} songs`, type: 'playlist' }))
@@ -433,8 +369,8 @@ function renderSidebar() {
     <div class="playlist-item" data-id="${item.id}" data-type="${item.type}">
       <div class="playlist-item-thumb">
         ${item.type === 'liked'
-          ? `<svg viewBox="0 0 24 24" fill="currentColor" style="color:#1DB954"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>`
-          : `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>`
+          ? '<svg viewBox="0 0 24 24" fill="currentColor" style="color:#8B5CF6"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>'
+          : '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>'
         }
       </div>
       <div class="playlist-item-info">
@@ -470,7 +406,6 @@ function setupNav() {
     });
   });
 
-  // Mobile bottom navigation
   document.querySelectorAll('.mob-nav-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const page = btn.getAttribute('data-page');
@@ -566,14 +501,8 @@ async function showHomePage() {
 
 async function loadTrending() {
   try {
-    const res = await ytFetch('/videos', {
-      part: 'snippet,contentDetails',
-      chart: 'mostPopular',
-      videoCategoryId: '10',
-      regionCode: 'IN',
-      maxResults: '20'
-    });
-    const tracks = res.items.map(itemToTrack);
+    const res = await apiFetch('/trending', { limit: 20 });
+    const tracks = res.items || [];
     const sections = document.querySelectorAll('.section');
     const trendSection = sections[playlists.length || likedSongs.length ? 1 : 0];
     if (trendSection) {
@@ -666,26 +595,17 @@ async function doSearch(q) {
   if (!sr) return;
   sr.innerHTML = '<div class="spinner-wrap"><div class="spinner"></div></div>';
   try {
-    const res = await ytFetch('/search', {
-      part: 'snippet',
-      type: 'video',
-      videoCategoryId: '10',
-      q: q,
-      maxResults: '30',
-      safeSearch: 'none'
-    });
-    const tracks = res.items.map(searchItemToTrack).filter(Boolean);
+    const res = await apiFetch('/search', { q, limit: 30 });
+    const tracks = res.items || [];
     if (!tracks.length) {
-      sr.innerHTML = '<div class="empty-state"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg><h3>No results found</h3><p>Try different keywords</p></div>';
+      sr.innerHTML = '<div class="empty-state"><h3>No results found</h3><p>Try different keywords</p></div>';
       return;
     }
     sr.innerHTML = `
       <section class="section">
         <div class="section-header"><h2 class="section-title">Results for "${escHtml(q)}"</h2></div>
         <div class="track-list">
-          <div class="track-list-header">
-            <span>#</span><span>Title</span><span>Channel</span><span>⏱</span>
-          </div>
+          <div class="track-list-header"><span>#</span><span>Title</span><span>Channel</span><span>⏱</span></div>
           ${tracks.map((t, i) => trackRowHTML(t, i)).join('')}
         </div>
       </section>
@@ -714,7 +634,7 @@ function showPlaylistPage(id) {
       <div class="playlist-cover">
         ${pl.tracks[0]
           ? `<img src="${escHtml(pl.tracks[0].thumbnail)}" alt="" />`
-          : `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>`
+          : '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>'
         }
       </div>
       <div class="playlist-info">
@@ -887,7 +807,7 @@ function toggleLike(track) {
   const idx = likedSongs.findIndex(t => t.videoId === track.videoId);
   if (idx === -1) {
     likedSongs.unshift(track);
-    showToast('💚 Added to Liked Songs');
+    showToast('💜 Added to Liked Songs');
   } else {
     likedSongs.splice(idx, 1);
     showToast('Removed from Liked Songs');
@@ -907,8 +827,7 @@ function showTrackContextMenu(e, track, inPlaylistId = null, inLiked = false) {
     { label: '▶ Play now',      icon: 'play',   action: () => addToQueue(track, true) },
     { label: '+ Add to queue',  icon: 'queue',  action: () => addToQueue(track) },
     { type: 'separator' },
-    { label: liked ? '💔 Remove from Liked' : '♡ Like', icon: 'like',
-      action: () => toggleLike(track) },
+    { label: liked ? '💔 Remove from Liked' : '♡ Like', icon: 'like', action: () => toggleLike(track) },
     ...(playlists.length ? [
       { label: 'Add to Playlist ▶', icon: 'playlist', submenu: playlists.map(pl => ({
         label: pl.name, action: () => addTrackToPlaylist(track, pl.id)
@@ -921,13 +840,11 @@ function showTrackContextMenu(e, track, inPlaylistId = null, inLiked = false) {
     ]),
     ...(inPlaylistId ? [
       { type: 'separator' },
-      { label: '🗑 Remove from playlist', icon: 'del',
-        action: () => removeTrackFromPlaylist(track.videoId, inPlaylistId) }
+      { label: '🗑 Remove from playlist', icon: 'del', action: () => removeTrackFromPlaylist(track.videoId, inPlaylistId) }
     ] : []),
     ...(inLiked ? [
       { type: 'separator' },
-      { label: '🗑 Remove from liked', icon: 'del',
-        action: () => toggleLike(track) }
+      { label: '🗑 Remove from liked', icon: 'del', action: () => toggleLike(track) }
     ] : []),
   ];
 
@@ -1011,25 +928,26 @@ function trackRowHTML(track, idx, inPlaylist = false, inLiked = false) {
         </div>
       </div>
       <div class="track-cell-album">${escHtml(track.channelTitle || '—')}</div>
-      <div class="track-cell-duration">${escHtml(track.duration || '—')}</div>
+      <div class="track-cell-time">${typeof track.duration === 'number' ? formatTime(track.duration) : (track.duration || '—')}</div>
+      <div class="track-cell-actions">
+        <button class="icon-btn row-like-btn${likedSongs.some(t=>t.videoId===track.videoId)?' liked':''}" title="Like">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+        </button>
+        <button class="icon-btn row-dots-btn" title="More">···</button>
+      </div>
     </div>`;
 }
 
 function bindCardEvents(container, tracks) {
-  container.querySelectorAll('.track-card').forEach((card, i) => {
-    const track = tracks[i];
-    if (!track) return;
-    card.querySelector('.card-play-btn').addEventListener('click', (e) => {
-      e.stopPropagation();
-      playTracksFromList(tracks, i);
-    });
-    card.addEventListener('click', () => playTracksFromList(tracks, i));
-    card.addEventListener('contextmenu', (e) => showTrackContextMenu(e, track));
+  container.querySelectorAll('.track-card').forEach(card => {
+    const idx = parseInt(card.getAttribute('data-idx'), 10);
+    card.addEventListener('click', () => playTracksFromList(tracks, idx));
   });
 }
 
 function bindTrackRowEvents(container, tracks, inPlaylist = false, inLiked = false) {
-  container.querySelectorAll('.track-row').forEach((row, i) => {
+  container.querySelectorAll('.track-row').forEach(row => {
+    const i = parseInt(row.getAttribute('data-idx'), 10);
     const track = tracks[i];
     if (!track) return;
     row.addEventListener('click', () => playTracksFromList(tracks, i));
@@ -1069,7 +987,6 @@ function setupPlayer() {
   volSlider.addEventListener('input', () => {
     volume = parseInt(volSlider.value, 10);
     audioEl.volume = volume / 100;
-    sendIframeCommand('setVolume', [volume]);
     isMuted = (volume === 0);
     updateVolIcons();
     updateVolumeSliderBg(volume);
@@ -1079,30 +996,15 @@ function setupPlayer() {
   document.getElementById('mute-btn').addEventListener('click', () => {
     isMuted = !isMuted;
     audioEl.muted = isMuted;
-    sendIframeCommand(isMuted ? 'mute' : 'unMute');
     updateVolIcons();
   });
 
   document.getElementById('progress-container').addEventListener('click', (e) => {
-    if (!currentTrack) return;
+    if (!currentTrack || !audioEl.duration) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const pct  = (e.clientX - rect.left) / rect.width;
-    const dur  = currentTrackDuration || 240;
-    sendIframeCommand('seekTo', [pct * dur, true]);
-    if (audioEl.duration) audioEl.currentTime = pct * audioEl.duration;
+    audioEl.currentTime = pct * audioEl.duration;
   });
-
-  // Toggle mini-player expand/collapse
-  const toggleMiniBtn = document.getElementById('toggle-mini-player-btn');
-  if (toggleMiniBtn) {
-    toggleMiniBtn.addEventListener('click', () => {
-      const wrap = document.getElementById('mini-player-wrap');
-      if (wrap) {
-        wrap.classList.toggle('minimized');
-        toggleMiniBtn.textContent = wrap.classList.contains('minimized') ? '🗖' : '🗕';
-      }
-    });
-  }
 
   document.getElementById('queue-toggle-btn').addEventListener('click', () => {
     const panel = document.getElementById('queue-panel');
@@ -1126,8 +1028,20 @@ function setupPlayer() {
 function updateVolIcons() {
   document.getElementById('vol-icon').style.display  = isMuted ? 'none' : '';
   document.getElementById('mute-icon').style.display = isMuted ? '' : 'none';
-  const slider = document.getElementById('volume-slider');
   updateVolumeSliderBg(isMuted ? 0 : volume);
+}
+
+function updateVolumeSliderBg(val) {
+  const slider = document.getElementById('volume-slider');
+  if (slider) slider.style.background = `linear-gradient(to right, var(--accent) ${val}%, var(--bg-highlight) ${val}%)`;
+}
+
+function updateThemeIcon(theme) {
+  const moon = document.getElementById('moon-icon');
+  const sun  = document.getElementById('sun-icon');
+  if (!moon || !sun) return;
+  moon.style.display = theme === 'dark' ? 'none' : 'block';
+  sun.style.display  = theme === 'dark' ? 'block' : 'none';
 }
 
 // ── TITLEBAR ──────────────────────────────────────────────────
@@ -1151,16 +1065,16 @@ function setupKeyboard() {
       case 'Space':     e.preventDefault(); togglePlayPause();    break;
       case 'ArrowRight':
         if (e.shiftKey) { e.preventDefault(); playNext(); }
-        else if (currentTrack) {
+        else if (currentTrack && audioEl.duration) {
           e.preventDefault();
-          const newT = (currentTrackTime || 0) + 5; sendIframeCommand('seekTo', [newT, true]); if (audioEl && audioEl.duration) audioEl.currentTime = Math.min(audioEl.duration, (audioEl.currentTime || 0) + 5);
+          audioEl.currentTime = Math.min(audioEl.duration, (audioEl.currentTime || 0) + 5);
         }
         break;
       case 'ArrowLeft':
         if (e.shiftKey) { e.preventDefault(); playPrev(); }
         else if (currentTrack) {
           e.preventDefault();
-          const newT = Math.max(0, (currentTrackTime || 0) - 5); sendIframeCommand('seekTo', [newT, true]); if (audioEl && audioEl.duration) audioEl.currentTime = Math.max(0, (audioEl.currentTime || 0) - 5);
+          audioEl.currentTime = Math.max(0, (audioEl.currentTime || 0) - 5);
         }
         break;
       case 'ArrowUp':
@@ -1168,7 +1082,6 @@ function setupKeyboard() {
         volume = Math.min(100, volume + 5);
         document.getElementById('volume-slider').value = volume;
         audioEl.volume = volume / 100;
-        sendIframeCommand('setVolume', [volume]);
         updateVolumeSliderBg(volume);
         break;
       case 'ArrowDown':
@@ -1176,7 +1089,6 @@ function setupKeyboard() {
         volume = Math.max(0, volume - 5);
         document.getElementById('volume-slider').value = volume;
         audioEl.volume = volume / 100;
-        sendIframeCommand('setVolume', [volume]);
         updateVolumeSliderBg(volume);
         break;
       case 'KeyM':  document.getElementById('mute-btn').click(); break;
@@ -1185,49 +1097,6 @@ function setupKeyboard() {
       case 'KeyR':  document.getElementById('repeat-btn').click(); break;
     }
   });
-}
-
-// ── YOUTUBE API HELPERS ───────────────────────────────────────
-async function ytFetch(endpoint, params) {
-  const url = new URL(YT_API_BASE + endpoint);
-  url.searchParams.set('key', YT_API_KEY);
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-  const res = await fetch(url.toString());
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error?.message || `HTTP ${res.status}`);
-  }
-  return res.json();
-}
-
-function itemToTrack(item) {
-  return {
-    videoId:      item.id,
-    title:        item.snippet?.title || 'Unknown',
-    channelTitle: item.snippet?.channelTitle || '',
-    thumbnail:    item.snippet?.thumbnails?.medium?.url || item.snippet?.thumbnails?.default?.url || '',
-    duration:     item.contentDetails ? formatISO8601(item.contentDetails.duration) : '—'
-  };
-}
-
-function searchItemToTrack(item) {
-  if (!item.id?.videoId) return null;
-  return {
-    videoId:      item.id.videoId,
-    title:        item.snippet?.title || 'Unknown',
-    channelTitle: item.snippet?.channelTitle || '',
-    thumbnail:    item.snippet?.thumbnails?.medium?.url || item.snippet?.thumbnails?.default?.url || '',
-    duration:     '—'
-  };
-}
-
-function formatISO8601(dur) {
-  if (!dur) return '—';
-  const m = dur.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
-  if (!m) return '—';
-  const h = parseInt(m[1]||0), mm = parseInt(m[2]||0), s = parseInt(m[3]||0);
-  if (h) return `${h}:${String(mm).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-  return `${mm}:${String(s).padStart(2,'0')}`;
 }
 
 // ── UTILS ─────────────────────────────────────────────────────
@@ -1261,6 +1130,7 @@ function escHtml(str) {
 let toastTimer = null;
 function showToast(msg, duration = 2500) {
   const toast = document.getElementById('toast');
+  if (!toast) return;
   toast.textContent = msg;
   toast.classList.add('show');
   if (toastTimer) clearTimeout(toastTimer);
