@@ -195,7 +195,7 @@ async function playTrack(track) {
   const iframe = document.getElementById('yt-iframe');
   if (iframe) {
     const origin = (window.location.origin && window.location.origin !== 'null') ? encodeURIComponent(window.location.origin) : 'https://bashith-10399.github.io';
-    iframe.src = 'https://www.youtube.com/embed/' + track.videoId + '?autoplay=1&enablejsapi=1&playsinline=1&origin=' + origin;
+    iframe.src = 'https://www.youtube-nocookie.com/embed/' + track.videoId + '?autoplay=1&enablejsapi=1&playsinline=1&origin=' + origin;
     iframe.onload = () => {
       try {
         iframe.contentWindow.postMessage(JSON.stringify({ event: 'listening' }), '*');
